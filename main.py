@@ -1,30 +1,29 @@
-from clickup_llama import ClickUpLlama
+from src.graph.graph import app
+from src.index.indexer import ingest_document
 
-clickup_url = input("🐙 Enter ClickUp Docs URL: ")
-
-try:
-    workspace, doc_ids = clickup_url.split("app.clickup.com")[1].split("/v/dc/")
-    doc_id, sub_doc_id = doc_ids.split("/")
-except ValueError:
-    print("❌ Invalid ClickUp URL. Please enter a valid URL.")
-    exit(1)
-
-print("⏳ Starting initiation of Ninja ⏳")
-clickup_llama = ClickUpLlama(workspace, doc_id, sub_doc_id)
-
-print(f"🦙 Clickup Llama initiated for repo: {workspace}/{doc_ids}")
+click_up_url = input("📝 Enter ClickUp Docs URL: ")
+ingest_document(click_up_url)
 
 while True:
     print(
         "-------------------------------------------------------------------------------"
     )
-    query = input("🤔 Enter your query: ")
+    query = input("🤔 User: Enter your query: ")
+    if len(query.strip()):
+        continue
+    inputs = {"question": query}
 
     try:
-        answer = clickup_llama.answer_query(query)
-        responses = answer.get("responses", "No response available.")
-        sources = answer.get("sources", "No sources available.")
-        print(f"\n\n📝 Answer to query: \n{responses} \n\nℹ️ Sources: {sources}")
+        for output in app.stream(inputs):
+            for key, value in output.items():
+                # Node
+                print(f"Node '{key}':")
+                # Optional: print full state at each node
+                # pprint.pprint(value["keys"], indent=2, width=80, depth=None)
+            print("\n---\n")
+
+        # Final generation
+        print("🎯 LLM:", value["generation"])
     except Exception as e:
         print(f"❌ An error occurred while processing your query: {e}")
 

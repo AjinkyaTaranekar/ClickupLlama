@@ -47,10 +47,11 @@ def get_clickup_docs(workspace_id, doc_id, page_id=""):
 
     try:
         response = requests.get(url, headers=headers)
-        response.raise_for_status()  # Raise an error for bad HTTP responses
+        response.raise_for_status()  
 
         data = response.json()
         documents = parse_response(data)
+        print(f"📝 Got Documents from {len(documents)} ClickUp")
 
     except requests.exceptions.HTTPError as http_err:
         print(f"HTTP error occurred: {http_err}")
