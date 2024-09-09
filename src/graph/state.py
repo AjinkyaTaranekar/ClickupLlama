@@ -1,6 +1,5 @@
 from typing import List
 
-from langchain.schema import Document
 from typing_extensions import TypedDict
 
 from src.index.indexer import retriever
@@ -9,7 +8,6 @@ from src.llms.generator import rag_chain
 from src.llms.hallucination_grader import hallucination_grader
 from src.llms.retrieval_grader import retrieval_grader
 from src.llms.rewriter import question_rewriter
-from src.llms.router import question_router
 
 
 class GraphState(TypedDict):
@@ -17,30 +15,32 @@ class GraphState(TypedDict):
     Represents the state of our graph.
 
     Attributes:
-        question: question
-        generation: LLM generation
-        documents: list of documents
+        question: The question being asked
+        generation: The generated answer from the LLM
+        feedback: Feedback from the previous generation
+        documents: List of retrieved documents
     """
 
     question: str
     generation: str
+    feedback: str
     documents: List[str]
 
 
 def retrieve(state):
     """
-    Retrieve documents
+    Retrieve documents based on the question in the state.
 
     Args:
         state (dict): The current graph state
 
     Returns:
-        state (dict): New key added to state, documents, that contains retrieved documents
+        dict: Updated state with retrieved documents
     """
     print("---RETRIEVE---")
     question = state["question"]
 
-    # Retrieval
+    # Retrieve documents
     documents = retriever.invoke(question)
     print(documents)
     return {"documents": documents, "question": question}
@@ -48,51 +48,61 @@ def retrieve(state):
 
 def generate(state):
     """
-    Generate answer
+    Generate an answer based on the question and documents in the state.
 
     Args:
         state (dict): The current graph state
 
     Returns:
-        state (dict): New key added to state, generation, that contains LLM generation
+        dict: Updated state with the generated answer
     """
     print("---GENERATE---")
     question = state["question"]
     documents = state["documents"]
+    feedback = state.get("feedback", "")
 
-    # RAG generation
-    generation = rag_chain.invoke({"context": documents, "question": question})
+    # Generate answer using RAG chain
+    generation = rag_chain.invoke(
+        {
+            "context": documents,
+            "question": question,
+            "feedback": (
+                f"Feedback from last LLM run: \n {feedback}, \ncan you now improve based on this response"
+                if feedback
+                else ""
+            ),
+        }
+    )
+    print(generation)
     return {"documents": documents, "question": question, "generation": generation}
 
 
 def grade_documents(state):
     """
-    Determines whether the retrieved documents are relevant to the question.
+    Determine the relevance of the retrieved documents to the question.
 
     Args:
         state (dict): The current graph state
 
     Returns:
-        state (dict): Updates documents key with only filtered relevant documents
+        dict: Updated state with only relevant documents
     """
-
     print("---CHECK DOCUMENT RELEVANCE TO QUESTION---")
     question = state["question"]
     documents = state["documents"]
 
-    # Score each doc
+    # Filter relevant documents
     filtered_docs = []
-    for d in documents:
+    for doc in documents:
         score = retrieval_grader.invoke(
-            {"question": question, "document": d.page_content}
+            {"question": question, "document": doc.page_content}
         )
-        grade = score["score"]
-        if grade == "yes":
+        print(score)
+        if score["score"] == "yes" or score["score"][0] == "yes":
             print("---GRADE: DOCUMENT RELEVANT---")
-            filtered_docs.append(d)
+            filtered_docs.append(doc)
         else:
             print("---GRADE: DOCUMENT NOT RELEVANT---")
-            continue
     return {"documents": filtered_docs, "question": question}
 
 
@@ -104,15 +114,16 @@ def transform_query(state):
         state (dict): The current graph state
 
     Returns:
-        state (dict): Updates question key with a re-phrased question
+        dict: Updated state with a re-phrased question
     """
-
     print("---TRANSFORM QUERY---")
     question = state["question"]
     documents = state["documents"]
 
     # Re-write question
     better_question = question_rewriter.invoke({"question": question})
+    print(better_question)
+
     return {"documents": documents, "question": better_question}
 
 
@@ -121,43 +132,39 @@ def transform_query(state):
 
 def decide_to_generate(state):
     """
-    Determines whether to generate an answer, or re-generate a question.
+    Determine whether to generate an answer or re-generate a question.
 
     Args:
         state (dict): The current graph state
 
     Returns:
-        str: Binary decision for next node to call
+        str: Decision for the next node to call
     """
-
     print("---ASSESS GRADED DOCUMENTS---")
-    state["question"]
     filtered_documents = state["documents"]
 
     if not filtered_documents:
-        # All documents have been filtered check_relevance
-        # We will re-generate a new query
+        # All documents have been filtered out
         print(
             "---DECISION: ALL DOCUMENTS ARE NOT RELEVANT TO QUESTION, TRANSFORM QUERY---"
         )
         return "transform_query"
     else:
-        # We have relevant documents, so generate answer
+        # Relevant documents are available, generate answer
         print("---DECISION: GENERATE---")
         return "generate"
 
 
 def grade_generation_v_documents_and_question(state):
     """
-    Determines whether the generation is grounded in the document and answers question.
+    Determine whether the generation is grounded in the documents and answers the question.
 
     Args:
         state (dict): The current graph state
 
     Returns:
-        str: Decision for next node to call
+        str: Decision for the next node to call
     """
-
     print("---CHECK HALLUCINATIONS---")
     question = state["question"]
     documents = state["documents"]
@@ -166,20 +173,31 @@ def grade_generation_v_documents_and_question(state):
     score = hallucination_grader.invoke(
         {"documents": documents, "generation": generation}
     )
-    grade = score["score"]
+    print(score)
+    state["feedback"] = score["explanation"]
 
-    # Check hallucination
-    if grade == "yes":
+    if score["score"] == "yes" or score["score"][0] == "yes":
         print("---DECISION: GENERATION IS GROUNDED IN DOCUMENTS---")
-        # Check question-answering
         print("---GRADE GENERATION vs QUESTION---")
         score = answer_grader.invoke({"question": question, "generation": generation})
-        grade = score["score"]
-        if grade == "yes":
+        print(score)
+        if (
+            score["score"] == "yes"
+            or score["score"][0] == "yes"
+            and not score["weakness"]
+        ):
             print("---DECISION: GENERATION ADDRESSES QUESTION---")
             return "useful"
         else:
             print("---DECISION: GENERATION DOES NOT ADDRESS QUESTION---")
+            feedback = state["feedback"]
+            if score["strengths"]:
+                feedback += "\n STRENGTH:\n" + "\n-".join(score["strengths"])
+            if score["weaknesses"]:
+                feedback += "\n WEAKNESS:\n" + "\n-".join(score["weaknesses"])
+            if score["suggestion"]:
+                feedback += "\n SUGGESTION:\n" + score["suggestion"]
+            state["feedback"] = feedback
             return "not useful"
     else:
         print("---DECISION: GENERATION IS NOT GROUNDED IN DOCUMENTS, RE-TRY---")

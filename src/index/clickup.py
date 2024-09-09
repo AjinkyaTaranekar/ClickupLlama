@@ -1,8 +1,46 @@
 import os
+import re
 
 import requests
 
 CLICKUP_TOKEN = os.environ.get("CLICKUP_TOKEN")
+
+
+def clean_markdown(text: str) -> str:
+    # print("original:::", text)
+    # Pattern for the complex nested structure
+    pattern = r"\([^()]*(\([^()]*\)[^()]*)*\)"
+
+    # Keep replacing the innermost parentheses until no more remain
+    while re.search(pattern, text):
+        text = re.sub(pattern, "", text)
+
+    # Remove any remaining square brackets
+    text = re.sub(r"\[.*?\]", "", text)
+
+    # Remove any remaining parentheses
+    text = re.sub(r"[\(\)]", "", text)
+
+    # Convert Markdown tables to CSV-like format
+    def table_to_csv(match):
+        # Extract table rows
+        rows = match.group().strip().split("\n")
+        csv_lines = []
+        for row in rows:
+            # Split each row by "|" and strip whitespace
+            csv_line = ", ".join(cell.strip() for cell in row.split("|")[1:-1])
+            csv_lines.append(csv_line)
+        return "\n".join(csv_lines)
+
+    # Find Markdown tables and convert to CSV-like format
+    text = re.sub(r"(\|.+?\|\n\|[-:| ]+\|\n(\|.+?\|\n)+)", table_to_csv, text)
+    # Remove any occurrences of "---" followed by an optional comma
+    text = re.sub(r"---[,]{0,1}", "", text)
+    # Replace escaped underscores with regular underscores
+    text = text.replace("\\_", "_")
+
+    # print("transformed:::", text)
+    return text.strip()
 
 
 def parse_response(response):
@@ -12,12 +50,14 @@ def parse_response(response):
     parsed_data = []
 
     def extract_info(item):
+        cleaned_content = clean_markdown(item.get("content"))
+
         data = {
             "id": item.get("id"),
             "doc_id": item.get("doc_id"),
             "workspace_id": item.get("workspace_id"),
             "name": item.get("name"),
-            "content": item.get("content"),
+            "content": cleaned_content,
         }
 
         parsed_data.append(data)
@@ -43,11 +83,14 @@ def get_clickup_docs(workspace_id, doc_id, page_id=""):
         f"https://api.clickup.com/api/v3/workspaces/{workspace_id}/docs/{doc_id}/pages"
     )
 
+    # if page_id:
+    #     url += "/" + page_id
+
     headers = {"Authorization": CLICKUP_TOKEN}
 
     try:
         response = requests.get(url, headers=headers)
-        response.raise_for_status()  
+        response.raise_for_status()
 
         data = response.json()
         documents = parse_response(data)

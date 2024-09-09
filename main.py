@@ -9,9 +9,9 @@ while True:
         "-------------------------------------------------------------------------------"
     )
     query = input("🤔 User: Enter your query: ")
-    if len(query.strip()):
+    if len(query.strip()) == 0:
         continue
-    inputs = {"question": query}
+    inputs = {"question": query, "original_question": query}
 
     try:
         for output in app.stream(inputs):
